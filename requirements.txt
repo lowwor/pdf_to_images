@@ -1,4 +1,6 @@
 PySimpleGUI
 PyMuPDF
 Pillow
-svg_stack
+lxml
+six
+svgutils

@@ -12,7 +12,7 @@ zoom_x x方向的缩放系数
 zoom_y y方向的缩放系数
 rotation_angle 旋转角度
 '''
-def pdf_image(pdfPath, imgPath, zoom_x=5, zoom_y=5, rotation_angle=0):
+def pdf_image(pdfPath, imgPath, zoom_x=1, zoom_y=1, rotation_angle=0, image_type='png'):
     pdf_png_pages = list()
     # 打开PDF文件
     pdf = fitz.open(pdfPath)
@@ -22,9 +22,13 @@ def pdf_image(pdfPath, imgPath, zoom_x=5, zoom_y=5, rotation_angle=0):
         page = pdf[pg]
         # 设置缩放和旋转系数
         trans = fitz.Matrix(zoom_x, zoom_y).prerotate(rotation_angle)
-        pm = page.get_pixmap(matrix=trans, alpha=False)
-        # 开始写图像
-        pdf_png_pages.append(pm.tobytes(output='png'))
+        if image_type == 'png' :
+            pm = page.get_pixmap(matrix=trans, alpha=False)
+            pdf_png_pages.append(pm.tobytes(output='png'))
+        else:
+            pm = page.get_svg_image(matrix=trans)
+            pdf_png_pages.append(pm)
+
     pdf.close()
     return pdf_png_pages
 
@@ -75,24 +79,56 @@ def images_merge(images, images_number_in_one=5, blank_edge_pixels=60, LINE_PIXE
 import PySimpleGUI as sg
 import sys
 import threading
+from svgutils import transform
+from svgutils.templates import ColumnLayout
 
 # My function that takes a long time to do...
-def my_long_operation(path, window):
-    one_page_images_number = 5
+def my_svg_operation(path,fromPage,toPage,mergeNum):
+    pdf_png_pages = pdf_image(path, path, image_type='svg')
+
+    svg = transform.fromstring(pdf_png_pages[fromPage])
+
+    processImages = pdf_png_pages[fromPage-1:toPage]
+    pages_number = math.ceil(len(processImages) / mergeNum)  # 合并后的总页数
+    for page_index in range(pages_number):
+        layout = ColumnLayout(1, col_width=int(svg.width.replace("pt", "")))
+        for little_page_index in range(mergeNum):
+            # 检测最后一页，如果超范围就跳出
+            if page_index * mergeNum + little_page_index >= len(processImages):
+                break
+            svg = transform.fromstring(processImages[page_index * mergeNum + little_page_index])
+            layout.add_figure(svg)
+        endNum = (fromPage + (page_index + 1) * mergeNum - 1) if (fromPage + (page_index + 1) * mergeNum - 1) < toPage else toPage
+        print(f'正在处理{path}{fromPage+page_index*mergeNum}-{endNum}.svg')
+        layout.save(f'{path}{fromPage+page_index*mergeNum}-{endNum}.svg')
+
+    print('成功')
+
+    #
+    # pages = images_merge(pdf_png_pages, one_page_images_number, blank_edge_pixels, line_pixel)
+    # print('写出文件：')
+    # for page_index in range(len(pages)):
+    #     print(f'{path}{page_index*one_page_images_number+1}-{((page_index+1)*one_page_images_number)}.png')
+    #     im = pages[page_index].convert('RGB')
+    #     im.save(f'{path}{page_index*one_page_images_number+1}-{((page_index+1)*one_page_images_number)}.png')
+    # print('成功：')
+
+def my_png_operation(path,fromPage,toPage,zoomNum, mergeNum):
     blank_edge_pixels = 60
     line_pixel = 3
-    pdf_png_pages = pdf_image(path, path)
-    pages = images_merge(pdf_png_pages, one_page_images_number, blank_edge_pixels, line_pixel)
-    print('写出文件：')
+    pdf_png_pages = pdf_image(path, path,zoom_x=zoomNum,zoom_y=zoomNum, image_type= 'png')
+    pages = images_merge(pdf_png_pages[fromPage-1:toPage], mergeNum, blank_edge_pixels, line_pixel)
     for page_index in range(len(pages)):
-        print(f'{path}{page_index*one_page_images_number+1}-{((page_index+1)*one_page_images_number)}.png')
         im = pages[page_index].convert('RGB')
-        im.save(f'{path}{page_index*one_page_images_number+1}-{((page_index+1)*one_page_images_number)}.png')
+        endNum = (fromPage + (page_index + 1) * mergeNum - 1)  if (fromPage + (page_index + 1) * mergeNum - 1) < toPage else toPage
+        print(f'写出文件{path}{fromPage+page_index*mergeNum}-{endNum}.png')
+        im.save(f'{path}{fromPage+page_index*mergeNum}-{endNum}.png')
     print('成功：')
+
 
 def main():
     if len(sys.argv) == 1:
-        fname = sg.popup_get_file('选择要转换的pdf文件',file_types=(('PDF files', '*.pdf'),))
+        fname = sg.popup_get_file('选择要转换的pdf文件',file_types=(('PDF files', '*.pdf'),),keep_on_top=True)
     else:
         fname = sys.argv[1]
  
@@ -102,18 +138,30 @@ def main():
     else:
         path = fname
 
-        layout = [  
-            [sg.Multiline(size=(65,20), key='-ML-', autoscroll=True, reroute_stdout=True, write_only=True, reroute_cprint=True)],
-            [sg.Button('Exit')]]
+        layout = [
+            [sg.Text('FromPage', size=(25, 1)),sg.Input('1', key='-FromPage-')],
+            [sg.Text('ToPage', size=(25, 1)),sg.Input('10', key='-ToPage-')],
+            [sg.Text('OnePageImageNum', size=(25, 1)),sg.Input('5', key='-MergeNum-')],
+            [sg.Text('ImageQuality(Png Only)', size=(25, 1)),sg.Input('8', key='-ZoomNum-')],
+            [sg.Multiline(size=(85,20), key='-ML-', autoscroll=True, reroute_stdout=True, write_only=True, reroute_cprint=True)],
+            [sg.B('ToSvg'), sg.B('ToPng'), sg.Button('Exit')]]
 
-        window = sg.Window('Started', layout, keep_on_top=True, finalize=True)
-        threading.Thread(target=my_long_operation, args=(path, window,), daemon=True).start()   
+        window = sg.Window('Pdf To Images', layout, keep_on_top=True, finalize=True)
 
         while True:   
           # Event Loop
             event, values = window.read()
             if event == sg.WIN_CLOSED or event == 'Exit':
                 break
+            if event.startswith('ToSvg'):
+                threading.Thread(target=my_svg_operation, args=(
+                    path, int(values['-FromPage-']), int(values['-ToPage-']), int(values['-MergeNum-']),), daemon
+                                 =True).start()
+            if event.startswith('ToPng'):
+                threading.Thread(target=my_png_operation,
+                             args=(path, int(values['-FromPage-']), int(values['-ToPage-']), int(values['-ZoomNum-']), int(values['-MergeNum-']),),
+                             daemon=True).start()
+
         window.close()
 
 if __name__ == '__main__':
